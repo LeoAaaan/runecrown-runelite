@@ -1,0 +1,92 @@
+package com.runecrown;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+
+// What GET /overlay/feed answers (read with Gson).
+class Feed
+{
+	Guild guild;
+	Me me;
+	String hub;
+	List<Event> events = new ArrayList<>();
+	List<Group> groups = new ArrayList<>();
+	List<Post> forum = new ArrayList<>();
+	String at;
+	String error;
+	String message;
+
+	static class Guild
+	{
+		String id;
+		String name;
+		String tag;
+		String game;
+		String gameName;
+	}
+
+	static class Me
+	{
+		String name;
+	}
+
+	static class Event
+	{
+		String id;
+		String title;
+		String type;
+		String date;
+		Integer size;
+		boolean started;
+		int signed;
+		int tentative;
+		String me;
+		String link;
+
+		Instant when()
+		{
+			try
+			{
+				return Instant.parse(date);
+			}
+			catch (Exception e)
+			{
+				return null;
+			}
+		}
+	}
+
+	static class Group
+	{
+		String id;
+		String title;
+		String when;
+		String by;
+	}
+
+	static class Post
+	{
+		String id;
+		String title;
+		String cat;
+		int replies;
+	}
+
+	// "in 2h 15m", "in 3d 4h", "started"
+	static String until(Instant when)
+	{
+		if (when == null)
+		{
+			return "";
+		}
+		long m = Duration.between(Instant.now(), when).toMinutes();
+		if (m <= 0)
+		{
+			return "started";
+		}
+		long d = m / 1440, h = (m % 1440) / 60, mm = m % 60;
+		return "in " + (d > 0 ? d + "d " + h + "h" : h > 0 ? h + "h " + mm + "m" : mm + "m");
+	}
+}
