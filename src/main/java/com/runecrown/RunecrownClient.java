@@ -16,7 +16,7 @@ import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
 
-// Talks to the Runecrown server with the member's own overlay code. Two calls only: read the feed, answer an event.
+// Talks to the Runecrown server with the member's own overlay code. Read the feed, answer an event, and the opt-in reports (drop races, clan feed).
 @Slf4j
 @Singleton
 class RunecrownClient
@@ -102,6 +102,28 @@ class RunecrownClient
 			{
 				log.debug("Runecrown drop report failed", e);
 				done.accept(error("Could not reach Runecrown to report your drop."));
+			}
+
+			@Override
+			public void onResponse(Call call, Response res)
+			{
+				done.accept(read(res));
+			}
+		});
+	}
+
+	// Clan feed: a valuable drop, pet, new collection log item, 99 or personal best. Body fields as in /overlay/osrs.
+	void osrs(String server, String code, java.util.Map<String, Object> body, Consumer<Feed> done)
+	{
+		Request req = new Request.Builder().url(base(server, "overlay/osrs", code).build())
+			.post(RequestBody.create(MediaType.parse("application/json; charset=utf-8"), gson.toJson(body))).build();
+		http.newCall(req).enqueue(new Callback()
+		{
+			@Override
+			public void onFailure(Call call, IOException e)
+			{
+				log.debug("Runecrown clan feed report failed", e);
+				done.accept(error("Could not reach Runecrown to share that."));
 			}
 
 			@Override

@@ -15,6 +15,8 @@ class Feed
 	List<Group> groups = new ArrayList<>();
 	List<Post> forum = new ArrayList<>();
 	List<Race> races = new ArrayList<>();
+	// Only for Old School RuneScape clans: what the clan wants shared.
+	Osrs osrs;
 	String at;
 	String error;
 	String message;
@@ -68,6 +70,24 @@ class Feed
 		String title;
 		String when;
 		String by;
+	}
+
+	static class Osrs
+	{
+		// Drops worth at least this many coins go to the clan feed; null = the clan has the drop feed off.
+		Long minValue;
+		boolean pets;
+		boolean clog;
+		boolean levels;
+		boolean pbs;
+		// Items wanted by the clan bingo boards you are on (sent whatever they are worth).
+		List<Tile> bingo = new ArrayList<>();
+	}
+
+	static class Tile
+	{
+		String boss;
+		List<String> items = new ArrayList<>();
 	}
 
 	// A drop race: the first member to get one of the items from the boss wins.

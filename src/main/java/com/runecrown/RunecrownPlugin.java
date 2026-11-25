@@ -37,8 +37,8 @@ import net.runelite.client.util.ImageUtil;
 @Slf4j
 @PluginDescriptor(
 	name = "Runecrown",
-	description = "Your clan's next events from Runecrown, with Going / Maybe / Can't buttons",
-	tags = {"clan", "events", "calendar", "signup", "guild"}
+	description = "Your clan's events, drop races, bingo, drops and pets feed, collection log and personal bests on Runecrown",
+	tags = {"clan", "events", "calendar", "signup", "guild", "bingo", "drops", "pets", "collection log", "personal best", "discord"}
 )
 public class RunecrownPlugin extends Plugin
 {
@@ -76,6 +76,20 @@ public class RunecrownPlugin extends Plugin
 	private static final Pattern KC = Pattern.compile("^Your (?:completed |subdued )?(.+?) (?:kill |chest |completion |success |harvest )?count is: ([0-9,]+)");
 	// The last kill count seen per boss (the message comes just before the loot).
 	private final Map<String, Integer> lastKc = new HashMap<>();
+	// The boss of the last kill count message, and when it came (for pets and personal bests).
+	private String lastBoss;
+	private long lastBossAt;
+	// A personal best seen before its kill count message (raids say the time first).
+	private Long pendingPbMs;
+	private Integer pendingPbTeam;
+	private long pendingPbAt;
+
+	private static final Pattern PET = Pattern.compile("^(?:You have a funny feeling like you(?:'re being| would have been) followed|You feel something weird sneaking into your backpack)");
+	private static final Pattern CLOG = Pattern.compile("^New item added to your collection log: (.+?)\\.?$");
+	private static final Pattern LEVEL = Pattern.compile("^Congratulations, you've just advanced your (.+?) level\\. You are now level (\\d+)");
+	private static final Pattern TOTAL = Pattern.compile("^Congratulations, you've reached a total level of (\\d+)");
+	private static final Pattern PB = Pattern.compile("([0-9]+(?::[0-9]{2}){1,2}(?:\\.[0-9]{1,2})?) \\(new personal best\\)");
+	private static final Pattern TEAM = Pattern.compile("Team size: (?:(\\d+) player|(Solo))", Pattern.CASE_INSENSITIVE);
 
 	private RunecrownPanel panel;
 	private NavigationButton button;
@@ -110,7 +124,7 @@ public class RunecrownPlugin extends Plugin
 	@Subscribe
 	public void onConfigChanged(ConfigChanged e)
 	{
-		if (RunecrownConfig.GROUP.equals(e.getGroup()) && ("code".equals(e.getKey()) || "dropRaces".equals(e.getKey())))
+		if (RunecrownConfig.GROUP.equals(e.getGroup()) && ("code".equals(e.getKey()) || "dropRaces".equals(e.getKey()) || e.getKey().startsWith("share")))
 		{
 			feed = null;
 			executor.execute(this::refresh);
@@ -127,7 +141,9 @@ public class RunecrownPlugin extends Plugin
 		{
 			return;
 		}
-		Matcher m = KC.matcher(Text.removeTags(e.getMessage()));
+		String msg = Text.removeTags(e.getMessage());
+		clanChat(msg);
+		Matcher m = KC.matcher(msg);
 		if (!m.find())
 		{
 			return;
@@ -143,6 +159,13 @@ public class RunecrownPlugin extends Plugin
 			return;
 		}
 		lastKc.put(Feed.norm(boss), kc);
+		lastBoss = boss;
+		lastBossAt = System.currentTimeMillis();
+		if (pendingPbMs != null && lastBossAt - pendingPbAt < 15000)
+		{
+			sendPb(boss, pendingPbMs, pendingPbTeam);
+		}
+		pendingPbMs = null;
 		// Count this kill for every race on this boss that is running now (kills while the plugin was off are not seen).
 		Feed f = feed;
 		if (f == null || !config.dropRaces())
@@ -156,6 +179,186 @@ public class RunecrownPlugin extends Plugin
 				String k = "raceKills." + r.id;
 				Integer n = configManager.getConfiguration(RunecrownConfig.GROUP, k, Integer.class);
 				configManager.setConfiguration(RunecrownConfig.GROUP, k, (n == null ? 0 : n) + 1);
+			}
+		}
+	}
+
+	/* ---------------- Clan feed ----------------
+	   Each kind has its own switch (all off at first). Nothing is sent for clans on other games. */
+
+	private Feed.Osrs osrsPart()
+	{
+		Feed f = feed;
+		return f == null || !RunecrownClient.CODE.matcher(code()).matches() ? null : f.osrs;
+	}
+
+	private String recentBoss()
+	{
+		return lastBoss != null && System.currentTimeMillis() - lastBossAt < 60000 ? lastBoss : null;
+	}
+
+	private void clanChat(String msg)
+	{
+		Feed.Osrs o = osrsPart();
+		if (o == null)
+		{
+			return;
+		}
+		Matcher m;
+		if (config.sharePets() && o.pets && PET.matcher(msg).find())
+		{
+			String boss = recentBoss();
+			Map<String, Object> b = body("pet");
+			b.put("source", boss);
+			b.put("kc", boss == null ? null : lastKc.get(Feed.norm(boss)));
+			send(b);
+			return;
+		}
+		if (config.shareClog() && o.clog && (m = CLOG.matcher(msg)).find())
+		{
+			Map<String, Object> b = body("clog");
+			b.put("item", m.group(1).trim());
+			send(b);
+			return;
+		}
+		if (config.shareLevels() && o.levels)
+		{
+			if ((m = LEVEL.matcher(msg)).find() && "99".equals(m.group(2)))
+			{
+				Map<String, Object> b = body("level");
+				b.put("skill", m.group(1));
+				b.put("level", 99);
+				send(b);
+				return;
+			}
+			if ((m = TOTAL.matcher(msg)).find() && Integer.parseInt(m.group(1)) >= 2277)
+			{
+				Map<String, Object> b = body("level");
+				b.put("skill", "Total");
+				b.put("level", Integer.parseInt(m.group(1)));
+				send(b);
+				return;
+			}
+		}
+		if (config.sharePbs() && o.pbs && (m = PB.matcher(msg)).find())
+		{
+			long ms = parseTime(m.group(1));
+			Integer team = null;
+			Matcher t = TEAM.matcher(msg);
+			if (t.find())
+			{
+				team = t.group(2) != null ? 1 : Integer.valueOf(t.group(1));
+			}
+			// Bosses say the kill count first, raids say it after the time.
+			String boss = lastBoss != null && System.currentTimeMillis() - lastBossAt < 3000 ? lastBoss : null;
+			if (ms > 0 && boss != null)
+			{
+				sendPb(boss, ms, team);
+			}
+			else if (ms > 0)
+			{
+				pendingPbMs = ms;
+				pendingPbTeam = team;
+				pendingPbAt = System.currentTimeMillis();
+			}
+		}
+	}
+
+	// "1:19.80" -> 79800, "1:02:03" -> 3723000
+	static long parseTime(String s)
+	{
+		try
+		{
+			String[] parts = s.split(":");
+			double secs = 0;
+			for (String p : parts)
+			{
+				secs = secs * 60 + Double.parseDouble(p);
+			}
+			return Math.round(secs * 1000);
+		}
+		catch (NumberFormatException e)
+		{
+			return 0;
+		}
+	}
+
+	private void sendPb(String boss, long ms, Integer team)
+	{
+		Map<String, Object> b = body("pb");
+		b.put("boss", boss);
+		b.put("ms", ms);
+		b.put("team", team);
+		b.put("kc", lastKc.get(Feed.norm(boss)));
+		send(b);
+	}
+
+	private Map<String, Object> body(String kind)
+	{
+		Map<String, Object> b = new HashMap<>();
+		b.put("kind", kind);
+		Player p = gameClient.getLocalPlayer();
+		b.put("rsn", p == null ? null : p.getName());
+		return b;
+	}
+
+	private void send(Map<String, Object> b)
+	{
+		client.osrs(config.server(), code(), b, res -> {
+			if (res.error != null && feed != null)
+			{
+				feed.message = res.message;
+				paint(feed, false);
+			}
+		});
+	}
+
+	// A drop worth sharing: above the clan's minimum, or an item one of your bingo boards wants.
+	private void clanDrops(String source, Collection<ItemStack> items)
+	{
+		Feed.Osrs o = osrsPart();
+		if (o == null || !config.shareDrops() || items == null)
+		{
+			return;
+		}
+		Map<String, int[]> seen = new HashMap<>();
+		Map<String, Integer> ids = new HashMap<>();
+		for (ItemStack it : items)
+		{
+			String name = itemManager.getItemComposition(it.getId()).getName();
+			int[] q = seen.computeIfAbsent(name, k -> new int[1]);
+			q[0] += it.getQuantity();
+			ids.put(name, it.getId());
+		}
+		for (Map.Entry<String, int[]> en : seen.entrySet())
+		{
+			String name = en.getKey();
+			int qty = en.getValue()[0];
+			long value = (long) itemManager.getItemPrice(ids.get(name)) * qty;
+			boolean bingo = false;
+			for (Feed.Tile t : o.bingo)
+			{
+				if (t.boss != null && !t.boss.isEmpty() && !Feed.sameBoss(source, t.boss))
+				{
+					continue;
+				}
+				for (String want : t.items)
+				{
+					if (Feed.norm(want).equals(Feed.norm(name)))
+					{
+						bingo = true;
+					}
+				}
+			}
+			if (bingo || (o.minValue != null && value >= o.minValue && value > 0))
+			{
+				Map<String, Object> b = body("drop");
+				b.put("item", name);
+				b.put("qty", qty);
+				b.put("value", value);
+				b.put("source", source);
+				b.put("kc", lastKc.get(Feed.norm(source)));
+				send(b);
 			}
 		}
 	}
@@ -181,6 +384,7 @@ public class RunecrownPlugin extends Plugin
 
 	private void loot(String source, Collection<ItemStack> items)
 	{
+		clanDrops(source, items);
 		Feed f = feed;
 		String code = code();
 		if (f == null || f.races.isEmpty() || !config.dropRaces() || !RunecrownClient.CODE.matcher(code).matches())
