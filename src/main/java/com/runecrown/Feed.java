@@ -14,9 +14,13 @@ class Feed
 	List<Event> events = new ArrayList<>();
 	List<Group> groups = new ArrayList<>();
 	List<Post> forum = new ArrayList<>();
+	List<Race> races = new ArrayList<>();
 	String at;
 	String error;
 	String message;
+	// Answer to a drop report.
+	Boolean won;
+	Winner winner;
 
 	static class Guild
 	{
@@ -64,6 +68,65 @@ class Feed
 		String title;
 		String when;
 		String by;
+	}
+
+	// A drop race: the first member to get one of the items from the boss wins.
+	static class Race
+	{
+		String id;
+		String title;
+		String boss;
+		List<String> items = new ArrayList<>();
+		String start;
+		String end;
+		Winner winner;
+
+		boolean running()
+		{
+			try
+			{
+				Instant now = Instant.now();
+				return winner == null && !now.isBefore(Instant.parse(start)) && now.isBefore(Instant.parse(end));
+			}
+			catch (Exception e)
+			{
+				return false;
+			}
+		}
+
+		Instant ends()
+		{
+			try
+			{
+				return Instant.parse(end);
+			}
+			catch (Exception e)
+			{
+				return null;
+			}
+		}
+	}
+
+	static class Winner
+	{
+		String name;
+		String item;
+		Integer kc;
+		Integer raceKills;
+		String at;
+		boolean me;
+	}
+
+	// Lower case letters and digits only, so "Vorkath's head" matches "Vorkath’s head".
+	static String norm(String s)
+	{
+		return s == null ? "" : s.replaceAll("<[^>]*>", "").toLowerCase().replaceAll("[^a-z0-9]+", "");
+	}
+
+	static boolean sameBoss(String a, String b)
+	{
+		String x = norm(a), y = norm(b);
+		return !x.isEmpty() && !y.isEmpty() && (x.contains(y) || y.contains(x));
 	}
 
 	static class Post

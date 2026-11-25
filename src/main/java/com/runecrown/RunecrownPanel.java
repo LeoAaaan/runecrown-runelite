@@ -32,12 +32,14 @@ class RunecrownPanel extends PluginPanel
 	private final JPanel body = new JPanel();
 	private final Runnable refresh;
 	private final BiConsumer<String, String> answer;
+	private final java.util.function.BooleanSupplier dropRacesOn;
 
-	RunecrownPanel(Runnable refresh, BiConsumer<String, String> answer)
+	RunecrownPanel(Runnable refresh, BiConsumer<String, String> answer, java.util.function.BooleanSupplier dropRacesOn)
 	{
 		super(false);
 		this.refresh = refresh;
 		this.answer = answer;
+		this.dropRacesOn = dropRacesOn;
 		setLayout(new BorderLayout());
 		setBorder(new EmptyBorder(8, 8, 8, 8));
 		setBackground(ColorScheme.DARK_GRAY_COLOR);
@@ -83,6 +85,14 @@ class RunecrownPanel extends PluginPanel
 			for (Feed.Event e : f.events)
 			{
 				event(e);
+			}
+			if (!f.races.isEmpty())
+			{
+				heading("Drop races");
+				for (Feed.Race r : f.races)
+				{
+					race(r, dropRacesOn.getAsBoolean());
+				}
 			}
 			heading("Open groups");
 			if (f.groups.isEmpty())
@@ -145,6 +155,46 @@ class RunecrownPanel extends PluginPanel
 			card.add(Box.createVerticalStrut(4));
 			card.add(row);
 		}
+		body.add(card);
+		body.add(Box.createVerticalStrut(6));
+	}
+
+	private void race(Feed.Race r, boolean on)
+	{
+		JPanel card = new JPanel();
+		card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+		card.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		card.setBorder(new EmptyBorder(6, 6, 6, 6));
+		card.setAlignmentX(LEFT_ALIGNMENT);
+		JLabel t = new JLabel("<html>" + esc(r.title) + "</html>");
+		t.setFont(FontManager.getRunescapeBoldFont());
+		t.setForeground(Color.WHITE);
+		card.add(t);
+		JLabel what = new JLabel("<html>" + esc(r.boss + ": " + String.join(", ", r.items)) + "</html>");
+		what.setFont(FontManager.getRunescapeSmallFont());
+		what.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+		card.add(what);
+		String state;
+		Color c;
+		if (r.winner != null)
+		{
+			state = (r.winner.me ? "You won" : r.winner.name + " won") + " with " + r.winner.item + (r.winner.raceKills != null ? " after " + r.winner.raceKills + " kills" : "");
+			c = GREEN;
+		}
+		else if (r.running())
+		{
+			state = "Running, ends " + Feed.until(r.ends()) + (on ? "" : ". Switch on Clan drop races in this plugin's settings to take part.");
+			c = on ? GOLD : AMBER;
+		}
+		else
+		{
+			state = "Not running now";
+			c = ColorScheme.LIGHT_GRAY_COLOR;
+		}
+		JLabel st = new JLabel("<html>" + esc(state) + "</html>");
+		st.setFont(FontManager.getRunescapeSmallFont());
+		st.setForeground(c);
+		card.add(st);
 		body.add(card);
 		body.add(Box.createVerticalStrut(6));
 	}

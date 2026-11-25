@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import okhttp3.Call;
 import okhttp3.Callback;
 import okhttp3.HttpUrl;
+import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
@@ -72,6 +73,35 @@ class RunecrownClient
 			public void onFailure(Call call, IOException e)
 			{
 				done.accept(error("Could not reach Runecrown. Try again."));
+			}
+
+			@Override
+			public void onResponse(Call call, Response res)
+			{
+				done.accept(read(res));
+			}
+		});
+	}
+
+	// A drop that matches a running drop race. The server decides who was first.
+	void drop(String server, String code, String raceId, String source, String item, Integer kc, Integer raceKills, String rsn, Consumer<Feed> done)
+	{
+		java.util.Map<String, Object> body = new java.util.HashMap<>();
+		body.put("race", raceId);
+		body.put("source", source);
+		body.put("item", item);
+		body.put("kc", kc);
+		body.put("raceKills", raceKills);
+		body.put("rsn", rsn);
+		Request req = new Request.Builder().url(base(server, "overlay/drop", code).build())
+			.post(RequestBody.create(MediaType.parse("application/json; charset=utf-8"), gson.toJson(body))).build();
+		http.newCall(req).enqueue(new Callback()
+		{
+			@Override
+			public void onFailure(Call call, IOException e)
+			{
+				log.debug("Runecrown drop report failed", e);
+				done.accept(error("Could not reach Runecrown to report your drop."));
 			}
 
 			@Override

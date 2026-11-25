@@ -34,6 +34,18 @@ public interface RunecrownConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "dropRaces",
+		name = "Clan drop races",
+		description = "Take part in your clan's drop races: when a drop matches a race that is running, the plugin tells Runecrown so the winner is announced in your clan's Discord",
+		position = 3,
+		warning = "When your clan runs a drop race, this sends the matching drop's item name, the boss, your kill count and your RuneScape name to the Runecrown server (not run by Jagex or RuneLite). No other drops are sent. Continue?"
+	)
+	default boolean dropRaces()
+	{
+		return false;
+	}
+
+	@ConfigItem(
 		keyName = "server",
 		name = "Server",
 		description = "Leave as it is unless Runecrown tells you otherwise",
