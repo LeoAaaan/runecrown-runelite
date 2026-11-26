@@ -802,10 +802,16 @@ public class RunecrownPlugin extends Plugin
 			}
 			for (Feed.Line l : res.lines)
 			{
-				String msg = new ChatMessageBuilder().append("[Discord] " + l.from + ": " + l.text).build();
+				// Text from Discord can't carry chat box tags (colours, images): the server strips them, and so does this.
+				String msg = new ChatMessageBuilder().append("[Discord] " + plain(l.from) + ": " + plain(l.text)).build();
 				clientThread.invokeLater(() -> chatMessageManager.queue(QueuedMessage.builder().type(ChatMessageType.CLAN_MESSAGE).runeLiteFormattedMessage(msg).build()));
 			}
 		});
+	}
+
+	private static String plain(String s)
+	{
+		return s == null ? "" : Text.removeTags(s).replace("<", "").replace(">", "");
 	}
 
 	/* ---------------- Find a clan ---------------- */

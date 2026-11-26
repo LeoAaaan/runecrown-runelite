@@ -33,13 +33,22 @@ class RunecrownClient
 		this.gson = gson;
 	}
 
+	// Only an https address: the overlay code travels with every call, so it never goes over plain http.
+	static HttpUrl serverUrl(String server)
+	{
+		HttpUrl u = server == null ? null : HttpUrl.parse(server.trim());
+		if (u == null || !u.isHttps())
+		{
+			u = HttpUrl.parse(DEFAULT_SERVER);
+		}
+		return u;
+	}
+
+	static final String DEFAULT_SERVER = "https://guild-hub-bot.holmen-moe.workers.dev";
+
 	private HttpUrl.Builder base(String server, String path, String code)
 	{
-		HttpUrl u = HttpUrl.parse(server);
-		if (u == null)
-		{
-			u = HttpUrl.parse("https://guild-hub-bot.holmen-moe.workers.dev");
-		}
+		HttpUrl u = serverUrl(server);
 		return u.newBuilder().addPathSegments(path).addQueryParameter("code", code);
 	}
 
@@ -184,11 +193,7 @@ class RunecrownClient
 	// Find a clan: the public directory of Old School RuneScape clans taking applications. No code needed.
 	void directory(String server, Consumer<Feed> done)
 	{
-		HttpUrl u = HttpUrl.parse(server);
-		if (u == null)
-		{
-			u = HttpUrl.parse("https://guild-hub-bot.holmen-moe.workers.dev");
-		}
+		HttpUrl u = serverUrl(server);
 		Request req = new Request.Builder().url(u.newBuilder().addPathSegment("directory").addQueryParameter("game", "osrs").build()).build();
 		http.newCall(req).enqueue(new Callback()
 		{
