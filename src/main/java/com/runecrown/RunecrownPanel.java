@@ -33,13 +33,15 @@ class RunecrownPanel extends PluginPanel
 	private final Runnable refresh;
 	private final BiConsumer<String, String> answer;
 	private final java.util.function.BooleanSupplier dropRacesOn;
+	private final Runnable findClans;
 
-	RunecrownPanel(Runnable refresh, BiConsumer<String, String> answer, java.util.function.BooleanSupplier dropRacesOn)
+	RunecrownPanel(Runnable refresh, BiConsumer<String, String> answer, java.util.function.BooleanSupplier dropRacesOn, Runnable findClans)
 	{
 		super(false);
 		this.refresh = refresh;
 		this.answer = answer;
 		this.dropRacesOn = dropRacesOn;
+		this.findClans = findClans;
 		setLayout(new BorderLayout());
 		setBorder(new EmptyBorder(8, 8, 8, 8));
 		setBackground(ColorScheme.DARK_GRAY_COLOR);
@@ -58,6 +60,9 @@ class RunecrownPanel extends PluginPanel
 			text("Paste your own overlay code in this plugin's settings (wrench icon › Runecrown).", ColorScheme.LIGHT_GRAY_COLOR);
 			text("In the hub: Settings › Overlay and add-ons › Make a code.", ColorScheme.LIGHT_GRAY_COLOR);
 			link("Open the hub", "https://app.runecrown.com");
+			heading("Looking for a clan?");
+			text("See Old School RuneScape clans on Runecrown that are taking new members, and apply in a minute.", ColorScheme.LIGHT_GRAY_COLOR);
+			button("Find a clan", this::loadClans);
 		}
 		else if (f == null)
 		{
@@ -116,6 +121,86 @@ class RunecrownPanel extends PluginPanel
 			link("Open the hub", f.hub != null && !f.hub.isEmpty() ? f.hub : "https://app.runecrown.com");
 			button("Refresh", refresh);
 		}
+		body.revalidate();
+		body.repaint();
+	}
+
+	private void loadClans()
+	{
+		body.removeAll();
+		title("Find a clan", null);
+		text("Loading…", ColorScheme.LIGHT_GRAY_COLOR);
+		body.revalidate();
+		body.repaint();
+		findClans.run();
+	}
+
+	// Find a clan: clans that listed themselves in the Runecrown directory and are taking applications.
+	void showClans(Feed f)
+	{
+		body.removeAll();
+		title("Find a clan", "Clans on Runecrown taking new members");
+		if (f == null || f.error != null)
+		{
+			text(f != null && f.message != null ? f.message : "Something went wrong.", RED);
+			button("Try again", this::loadClans);
+		}
+		else if (f.guilds.isEmpty())
+		{
+			text("No clans are listed right now. Check back soon.", ColorScheme.LIGHT_GRAY_COLOR);
+		}
+		for (Feed.Listed g : f == null ? java.util.Collections.<Feed.Listed>emptyList() : f.guilds)
+		{
+			JPanel card = new JPanel();
+			card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+			card.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+			card.setBorder(new EmptyBorder(6, 6, 6, 6));
+			card.setAlignmentX(LEFT_ALIGNMENT);
+			JLabel t = new JLabel("<html>" + esc((g.featured ? "♛ " : "") + g.name) + "</html>");
+			t.setFont(FontManager.getRunescapeBoldFont());
+			t.setForeground(g.featured ? GOLD : Color.WHITE);
+			card.add(t);
+			StringBuilder sub = new StringBuilder(g.members + " members");
+			for (String x : new String[]{g.language, g.region, g.times})
+			{
+				if (x != null && !x.isEmpty())
+				{
+					sub.append(" · ").append(x);
+				}
+			}
+			JLabel l = new JLabel("<html>" + esc(sub.toString()) + "</html>");
+			l.setFont(FontManager.getRunescapeSmallFont());
+			l.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+			card.add(l);
+			if (g.tagline != null && !g.tagline.isEmpty())
+			{
+				JLabel tg = new JLabel("<html>" + esc(g.tagline) + "</html>");
+				tg.setFont(FontManager.getRunescapeSmallFont());
+				tg.setForeground(Color.WHITE);
+				card.add(tg);
+			}
+			JPanel row = new JPanel(new GridLayout(1, g.page ? 2 : 1, 4, 0));
+			row.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+			row.setAlignmentX(LEFT_ALIGNMENT);
+			JButton apply = new JButton("Apply");
+			apply.setFocusPainted(false);
+			apply.addActionListener(a -> LinkBrowser.browse("https://app.runecrown.com/?apply=" + g.id));
+			row.add(apply);
+			if (g.page)
+			{
+				JButton about = new JButton("About us");
+				about.setFocusPainted(false);
+				about.addActionListener(a -> LinkBrowser.browse("https://app.runecrown.com/" + g.id));
+				row.add(about);
+			}
+			card.add(Box.createVerticalStrut(4));
+			card.add(row);
+			body.add(card);
+			body.add(Box.createVerticalStrut(6));
+		}
+		body.add(Box.createVerticalStrut(8));
+		link("All clans and guilds", "https://app.runecrown.com/?find");
+		button("Back", () -> show(null, true));
 		body.revalidate();
 		body.repaint();
 	}

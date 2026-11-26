@@ -2,7 +2,9 @@ package com.runecrown;
 
 import com.google.inject.Provides;
 import java.awt.image.BufferedImage;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -14,10 +16,25 @@ import javax.inject.Inject;
 import javax.swing.SwingUtilities;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.Actor;
 import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
+import net.runelite.api.GameState;
 import net.runelite.api.Player;
+import net.runelite.api.clan.ClanChannel;
+import net.runelite.api.clan.ClanChannelMember;
+import net.runelite.api.clan.ClanMember;
+import net.runelite.api.clan.ClanSettings;
+import net.runelite.api.clan.ClanTitle;
+import net.runelite.api.events.ActorDeath;
 import net.runelite.api.events.ChatMessage;
+import net.runelite.api.events.WidgetLoaded;
+import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.widgets.Widget;
+import net.runelite.client.callback.ClientThread;
+import net.runelite.client.chat.ChatMessageBuilder;
+import net.runelite.client.chat.ChatMessageManager;
+import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.events.NpcLootReceived;
 import net.runelite.client.game.ItemManager;
@@ -37,8 +54,8 @@ import net.runelite.client.util.ImageUtil;
 @Slf4j
 @PluginDescriptor(
 	name = "Runecrown",
-	description = "Your clan's events, drop races, bingo, drops and pets feed, collection log and personal bests on Runecrown",
-	tags = {"clan", "events", "calendar", "signup", "guild", "bingo", "drops", "pets", "collection log", "personal best", "discord"}
+	description = "Your clan in one place: events, drop races, bingo, a feed of drops, pets, raids, clues and more, ranks, attendance and a clan chat to Discord bridge",
+	tags = {"clan", "events", "calendar", "signup", "guild", "bingo", "drops", "pets", "collection log", "personal best", "discord", "raids", "clues", "ranks", "attendance", "clan chat"}
 )
 public class RunecrownPlugin extends Plugin
 {
@@ -69,6 +86,12 @@ public class RunecrownPlugin extends Plugin
 	@Inject
 	private ConfigManager configManager;
 
+	@Inject
+	private ClientThread clientThread;
+
+	@Inject
+	private ChatMessageManager chatMessageManager;
+
 	@Getter
 	private volatile Feed feed;
 
@@ -91,20 +114,46 @@ public class RunecrownPlugin extends Plugin
 	private static final Pattern PB = Pattern.compile("([0-9]+(?::[0-9]{2}){1,2}(?:\\.[0-9]{1,2})?) \\(new personal best\\)");
 	private static final Pattern TEAM = Pattern.compile("Team size: (?:(\\d+) player|(Solo))", Pattern.CASE_INSENSITIVE);
 
+	// Raids: the time and team from the completion message, sent with the kill count.
+	private static final Pattern RAID_TIME = Pattern.compile("(?:Duration|completion time):? ?([0-9]+(?::[0-9]{2}){1,2}(?:\\.[0-9]{1,2})?)", Pattern.CASE_INSENSITIVE);
+	private Long lastRaidMs;
+	private Integer lastRaidTeam;
+	private long lastRaidAt;
+	// Clues: the count message and the casket's value (from the loot tracker) arrive together.
+	private static final Pattern CLUE = Pattern.compile("^You have completed ([0-9,]+) (beginner|easy|medium|hard|elite|master) Treasure Trails?\\.", Pattern.CASE_INSENSITIVE);
+	private String clueTier;
+	private Integer clueCount;
+	private Long clueValue;
+	private long clueValueAt;
+	private static final Pattern CA = Pattern.compile("^Congratulations, you've completed an? (\\w+) combat task: (.+?)(?: \\((\\d+) points?\\))?\\.?$");
+	private static final Pattern DIARY = Pattern.compile("^Congratulations! You have completed all of the (easy|medium|hard|elite) tasks in the (.+?) area", Pattern.CASE_INSENSITIVE);
+	private static final Pattern QUEST = Pattern.compile("^You(?:'ve| have) (?:completed|been|rebuilt|\\w+ed) (?:the )?'?(.+?)'?(?: [Qq]uest)?[!.]?$");
+	// The clan in game: when the list and the check-in were last sent.
+	private long lastClanSent;
+	private long lastCheckIn;
+	// Clan chat bridge: lines waiting to go, and whether another member's plugin is sending for now.
+	private final List<Map<String, String>> chatQueue = new ArrayList<>();
+	private long notHostUntil;
+	private String discordAfter;
+	private volatile String chatClan;
+	private int chatTicks;
+
 	private RunecrownPanel panel;
 	private NavigationButton button;
 	private ScheduledFuture<?> poll;
+	private ScheduledFuture<?> chatPoll;
 
 	@Override
 	protected void startUp()
 	{
-		panel = new RunecrownPanel(this::refresh, this::answer, () -> config.dropRaces());
+		panel = new RunecrownPanel(this::refresh, this::answer, () -> config.dropRaces(), this::findClans);
 		BufferedImage icon = ImageUtil.loadImageResource(getClass(), "icon.png");
 		button = NavigationButton.builder().tooltip("Runecrown").icon(icon).priority(8).panel(panel).build();
 		clientToolbar.addNavigation(button);
 		overlayManager.add(overlay);
 		// Once a minute is plenty: events are planned hours or days ahead.
 		poll = executor.scheduleWithFixedDelay(this::refresh, 2, 60, TimeUnit.SECONDS);
+		chatPoll = executor.scheduleWithFixedDelay(this::chatTick, 5, 5, TimeUnit.SECONDS);
 	}
 
 	@Override
@@ -115,6 +164,16 @@ public class RunecrownPlugin extends Plugin
 			poll.cancel(true);
 			poll = null;
 		}
+		if (chatPoll != null)
+		{
+			chatPoll.cancel(true);
+			chatPoll = null;
+		}
+		synchronized (chatQueue)
+		{
+			chatQueue.clear();
+		}
+		discordAfter = null;
 		overlayManager.remove(overlay);
 		clientToolbar.removeNavigation(button);
 		feed = null;
@@ -137,6 +196,11 @@ public class RunecrownPlugin extends Plugin
 	@Subscribe
 	public void onChatMessage(ChatMessage e)
 	{
+		if (e.getType() == ChatMessageType.CLAN_CHAT)
+		{
+			bridgeLine(e.getName(), e.getMessage());
+			return;
+		}
 		if (e.getType() != ChatMessageType.GAMEMESSAGE && e.getType() != ChatMessageType.SPAM)
 		{
 			return;
@@ -166,6 +230,7 @@ public class RunecrownPlugin extends Plugin
 			sendPb(boss, pendingPbMs, pendingPbTeam);
 		}
 		pendingPbMs = null;
+		raidDone(boss, kc);
 		// Count this kill for every race on this boss that is running now (kills while the plugin was off are not seen).
 		Feed f = feed;
 		if (f == null || !config.dropRaces())
@@ -199,12 +264,44 @@ public class RunecrownPlugin extends Plugin
 
 	private void clanChat(String msg)
 	{
+		Matcher m;
+		if ((m = RAID_TIME.matcher(msg)).find())
+		{
+			lastRaidMs = parseTime(m.group(1));
+			lastRaidAt = System.currentTimeMillis();
+			Matcher t = TEAM.matcher(msg);
+			lastRaidTeam = t.find() ? (t.group(2) != null ? Integer.valueOf(1) : Integer.valueOf(t.group(1))) : lastRaidTeam;
+		}
 		Feed.Osrs o = osrsPart();
 		if (o == null)
 		{
 			return;
 		}
-		Matcher m;
+		if (config.shareClues() && o.clues && (m = CLUE.matcher(msg)).find())
+		{
+			clueTier = m.group(2).toLowerCase();
+			clueCount = Integer.parseInt(m.group(1).replace(",", ""));
+			// The casket's value comes from the loot tracker in the same moment; wait a little for it.
+			executor.schedule(() -> clientThread.invokeLater(this::flushClue), 3, TimeUnit.SECONDS);
+			return;
+		}
+		if (config.shareTasks() && o.cas && (m = CA.matcher(msg)).find())
+		{
+			Map<String, Object> b = body("ca");
+			b.put("tier", m.group(1).toLowerCase());
+			b.put("task", m.group(2).trim());
+			b.put("points", m.group(3) == null ? null : Integer.valueOf(m.group(3)));
+			send(b);
+			return;
+		}
+		if (config.shareTasks() && o.diaries && (m = DIARY.matcher(msg)).find())
+		{
+			Map<String, Object> b = body("diary");
+			b.put("tier", m.group(1).toLowerCase());
+			b.put("area", m.group(2).trim());
+			send(b);
+			return;
+		}
 		if (config.sharePets() && o.pets && PET.matcher(msg).find())
 		{
 			String boss = recentBoss();
@@ -384,6 +481,16 @@ public class RunecrownPlugin extends Plugin
 
 	private void loot(String source, Collection<ItemStack> items)
 	{
+		if (source != null && source.toLowerCase().startsWith("clue scroll") && items != null)
+		{
+			long v = 0;
+			for (ItemStack it : items)
+			{
+				v += (long) itemManager.getItemPrice(it.getId()) * it.getQuantity();
+			}
+			clueValue = v;
+			clueValueAt = System.currentTimeMillis();
+		}
 		clanDrops(source, items);
 		Feed f = feed;
 		String code = code();
@@ -432,6 +539,288 @@ public class RunecrownPlugin extends Plugin
 		});
 	}
 
+	/* ---------------- Raids, clues, quests, deaths ---------------- */
+
+	private static boolean isRaid(String boss)
+	{
+		String n = Feed.norm(boss);
+		return n.startsWith("chambersofxeric") || n.startsWith("theatreofblood") || n.startsWith("tombsofamascut");
+	}
+
+	// The raid's kill count message: send it a moment later with the time and team (some raids say them after the count).
+	private void raidDone(String boss, int kc)
+	{
+		Feed.Osrs o = osrsPart();
+		if (o == null || !o.raids || !config.shareRaids() || !isRaid(boss))
+		{
+			return;
+		}
+		Map<String, Object> b = body("raid");
+		b.put("raid", boss);
+		b.put("kc", kc);
+		long at = System.currentTimeMillis();
+		executor.schedule(() -> {
+			if (lastRaidMs != null && Math.abs(lastRaidAt - at) < 60000)
+			{
+				b.put("ms", lastRaidMs);
+				b.put("team", lastRaidTeam);
+			}
+			lastRaidMs = null;
+			lastRaidTeam = null;
+			send(b);
+		}, 4, TimeUnit.SECONDS);
+	}
+
+	private void flushClue()
+	{
+		Feed.Osrs o = osrsPart();
+		if (clueTier == null || o == null)
+		{
+			clueTier = null;
+			return;
+		}
+		Map<String, Object> b = body("clue");
+		b.put("tier", clueTier);
+		b.put("count", clueCount);
+		b.put("value", clueValue != null && System.currentTimeMillis() - clueValueAt < 10000 ? clueValue : null);
+		clueTier = null;
+		clueCount = null;
+		clueValue = null;
+		send(b);
+	}
+
+	@Subscribe
+	public void onWidgetLoaded(WidgetLoaded e)
+	{
+		if (e.getGroupId() != InterfaceID.QUESTSCROLL || !config.shareQuests())
+		{
+			return;
+		}
+		Feed.Osrs o = osrsPart();
+		Widget w = gameClient.getWidget(InterfaceID.Questscroll.QUEST_TITLE);
+		if (o == null || !o.quests || w == null || w.getText() == null)
+		{
+			return;
+		}
+		String text = Text.removeTags(w.getText()).trim();
+		Matcher m = QUEST.matcher(text);
+		if (!m.find() || text.contains("kind of"))
+		{
+			return;
+		}
+		Map<String, Object> b = body("quest");
+		b.put("quest", m.group(1) + (text.contains("completely") ? " II" : ""));
+		send(b);
+	}
+
+	@Subscribe
+	public void onActorDeath(ActorDeath e)
+	{
+		Player me = gameClient.getLocalPlayer();
+		if (me == null || e.getActor() != me || !config.shareDeaths())
+		{
+			return;
+		}
+		Feed.Osrs o = osrsPart();
+		if (o == null || !o.deaths)
+		{
+			return;
+		}
+		// Varbit 1777 is the account type: 3 hardcore ironman, 5 hardcore group ironman.
+		int type = gameClient.getVarbitValue(1777);
+		Actor killer = me.getInteracting();
+		Map<String, Object> b = body("death");
+		b.put("hc", type == 3 || type == 5);
+		b.put("gim", type == 5);
+		b.put("killer", killer == null ? null : Text.removeTags(String.valueOf(killer.getName())));
+		send(b);
+	}
+
+	/* ---------------- The clan in game: ranks, who is online, attendance ---------------- */
+
+	private Feed.Clan clanPart()
+	{
+		Feed.Osrs o = osrsPart();
+		return o == null ? null : o.clan;
+	}
+
+	private static String rsName(String s)
+	{
+		return s == null ? null : Text.removeTags(s).replace(' ', ' ').trim();
+	}
+
+	private void afterFeed()
+	{
+		Feed.Clan c = clanPart();
+		if (c == null)
+		{
+			return;
+		}
+		long now = System.currentTimeMillis();
+		if (config.shareClan() && c.due && now - lastClanSent > 4 * 60000)
+		{
+			clientThread.invokeLater(this::sendClan);
+		}
+		if (config.checkIn() && c.live != null && !c.live.isEmpty() && now - lastCheckIn > 5 * 60000)
+		{
+			clientThread.invokeLater(() -> {
+				if (gameClient.getGameState() != GameState.LOGGED_IN)
+				{
+					return;
+				}
+				lastCheckIn = System.currentTimeMillis();
+				Map<String, Object> b = body("here");
+				b.put("world", gameClient.getWorld());
+				send(b);
+			});
+		}
+	}
+
+	// Runs on the client thread: reads the clan as the game shows it.
+	private void sendClan()
+	{
+		if (gameClient.getGameState() != GameState.LOGGED_IN)
+		{
+			return;
+		}
+		ClanSettings cs = gameClient.getClanSettings();
+		ClanChannel ch = gameClient.getClanChannel();
+		if (cs == null && ch == null)
+		{
+			return;
+		}
+		List<Map<String, Object>> members = new ArrayList<>();
+		if (cs != null)
+		{
+			for (ClanMember m : cs.getMembers())
+			{
+				Map<String, Object> x = new HashMap<>();
+				ClanTitle t = cs.titleForRank(m.getRank());
+				x.put("n", rsName(m.getName()));
+				x.put("t", t == null ? null : t.getName());
+				x.put("r", m.getRank() == null ? 0 : m.getRank().getRank());
+				members.add(x);
+			}
+		}
+		List<Map<String, Object>> online = new ArrayList<>();
+		if (ch != null)
+		{
+			for (ClanChannelMember m : ch.getMembers())
+			{
+				Map<String, Object> x = new HashMap<>();
+				x.put("n", rsName(m.getName()));
+				x.put("w", m.getWorld());
+				online.add(x);
+			}
+		}
+		Map<String, Object> b = new HashMap<>();
+		b.put("clan", cs != null ? cs.getName() : ch.getName());
+		b.put("members", members);
+		b.put("online", online);
+		lastClanSent = System.currentTimeMillis();
+		client.post(config.server(), "overlay/clan", code(), b, "Could not reach Runecrown to share the clan list.", res -> {
+			if (res.error != null && feed != null)
+			{
+				feed.message = res.message;
+				paint(feed, false);
+			}
+		});
+	}
+
+	/* ---------------- Clan chat bridge ---------------- */
+
+	private boolean bridgeOn()
+	{
+		Feed.Clan c = clanPart();
+		return c != null && c.bridge;
+	}
+
+	private void bridgeLine(String from, String text)
+	{
+		if (!config.bridgeChat() || !bridgeOn() || System.currentTimeMillis() < notHostUntil || from == null || text == null)
+		{
+			return;
+		}
+		ClanChannel ch = gameClient.getClanChannel();
+		chatClan = ch == null ? null : ch.getName();
+		Map<String, String> l = new HashMap<>();
+		l.put("from", rsName(from));
+		l.put("text", Text.removeTags(text));
+		synchronized (chatQueue)
+		{
+			if (chatQueue.size() < 60)
+			{
+				chatQueue.add(l);
+			}
+		}
+	}
+
+	// Every 5 seconds: send waiting clan chat lines; every 15 seconds: show new Discord lines.
+	private void chatTick()
+	{
+		String code = code();
+		if (!RunecrownClient.CODE.matcher(code).matches() || !bridgeOn())
+		{
+			return;
+		}
+		List<Map<String, String>> lines;
+		synchronized (chatQueue)
+		{
+			lines = new ArrayList<>(chatQueue);
+			chatQueue.clear();
+		}
+		if (!lines.isEmpty() && config.bridgeChat() && System.currentTimeMillis() >= notHostUntil)
+		{
+			Map<String, Object> b = new HashMap<>();
+			b.put("clan", chatClan);
+			b.put("lines", lines);
+			client.post(config.server(), "overlay/chat", code, b, "Could not reach Runecrown to send clan chat.", res -> {
+				if (Boolean.FALSE.equals(res.host))
+				{
+					// Another member's plugin is sending clan chat; try again in a few minutes.
+					notHostUntil = System.currentTimeMillis() + 180000;
+				}
+			});
+		}
+		if (++chatTicks % 3 != 0 || !config.showDiscord() || gameClient.getGameState() != GameState.LOGGED_IN)
+		{
+			return;
+		}
+		client.chat(config.server(), code, discordAfter, res -> {
+			if (res.error != null)
+			{
+				return;
+			}
+			boolean first = discordAfter == null;
+			if (res.last != null)
+			{
+				discordAfter = res.last;
+			}
+			if (first || res.lines == null)
+			{
+				return;
+			}
+			for (Feed.Line l : res.lines)
+			{
+				String msg = new ChatMessageBuilder().append("[Discord] " + l.from + ": " + l.text).build();
+				clientThread.invokeLater(() -> chatMessageManager.queue(QueuedMessage.builder().type(ChatMessageType.CLAN_MESSAGE).runeLiteFormattedMessage(msg).build()));
+			}
+		});
+	}
+
+	/* ---------------- Find a clan ---------------- */
+
+	void findClans()
+	{
+		client.directory(config.server(), f -> {
+			RunecrownPanel p = panel;
+			if (p != null)
+			{
+				SwingUtilities.invokeLater(() -> p.showClans(f));
+			}
+		});
+	}
+
 	private String code()
 	{
 		return config.code() == null ? "" : config.code().trim();
@@ -457,6 +846,7 @@ public class RunecrownPlugin extends Plugin
 				feed.message = f.message;
 			}
 			paint(feed, false);
+			afterFeed();
 		});
 	}
 

@@ -134,6 +134,78 @@ class RunecrownClient
 		});
 	}
 
+	// Any JSON POST to an overlay path (clan list, clan chat), answered as a Feed.
+	void post(String server, String path, String code, Object body, String failMessage, Consumer<Feed> done)
+	{
+		Request req = new Request.Builder().url(base(server, path, code).build())
+			.post(RequestBody.create(MediaType.parse("application/json; charset=utf-8"), gson.toJson(body))).build();
+		http.newCall(req).enqueue(new Callback()
+		{
+			@Override
+			public void onFailure(Call call, IOException e)
+			{
+				log.debug("Runecrown {} failed", path, e);
+				done.accept(error(failMessage));
+			}
+
+			@Override
+			public void onResponse(Call call, Response res)
+			{
+				done.accept(read(res));
+			}
+		});
+	}
+
+	// Discord lines for the in-game chat box, newer than "after" (none the first time: it starts from now).
+	void chat(String server, String code, String after, Consumer<Feed> done)
+	{
+		HttpUrl.Builder u = base(server, "overlay/chat", code);
+		if (after != null)
+		{
+			u.addQueryParameter("after", after);
+		}
+		Request req = new Request.Builder().url(u.build()).header("Cache-Control", "no-store").build();
+		http.newCall(req).enqueue(new Callback()
+		{
+			@Override
+			public void onFailure(Call call, IOException e)
+			{
+				done.accept(error("Could not reach Runecrown."));
+			}
+
+			@Override
+			public void onResponse(Call call, Response res)
+			{
+				done.accept(read(res));
+			}
+		});
+	}
+
+	// Find a clan: the public directory of Old School RuneScape clans taking applications. No code needed.
+	void directory(String server, Consumer<Feed> done)
+	{
+		HttpUrl u = HttpUrl.parse(server);
+		if (u == null)
+		{
+			u = HttpUrl.parse("https://guild-hub-bot.holmen-moe.workers.dev");
+		}
+		Request req = new Request.Builder().url(u.newBuilder().addPathSegment("directory").addQueryParameter("game", "osrs").build()).build();
+		http.newCall(req).enqueue(new Callback()
+		{
+			@Override
+			public void onFailure(Call call, IOException e)
+			{
+				done.accept(error("Could not reach Runecrown. Try again."));
+			}
+
+			@Override
+			public void onResponse(Call call, Response res)
+			{
+				done.accept(read(res));
+			}
+		});
+	}
+
 	private Feed read(Response res)
 	{
 		try (ResponseBody body = res.body())

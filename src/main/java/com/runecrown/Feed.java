@@ -23,6 +23,33 @@ class Feed
 	// Answer to a drop report.
 	Boolean won;
 	Winner winner;
+	// Answer to the clan chat bridge (POST: whether this plugin is the one sending; GET: Discord lines after "last").
+	Boolean host;
+	List<Line> lines = new ArrayList<>();
+	String last;
+	// Find a clan (the public directory).
+	List<Listed> guilds = new ArrayList<>();
+
+	static class Line
+	{
+		String id;
+		String from;
+		String text;
+	}
+
+	static class Listed
+	{
+		String id;
+		String name;
+		String game;
+		int members;
+		String tagline;
+		String language;
+		String region;
+		String times;
+		boolean page;
+		boolean featured;
+	}
 
 	static class Guild
 	{
@@ -80,8 +107,31 @@ class Feed
 		boolean clog;
 		boolean levels;
 		boolean pbs;
+		boolean raids;
+		boolean clues;
+		boolean cas;
+		boolean diaries;
+		boolean quests;
+		boolean deaths;
+		Clan clan;
 		// Items wanted by the clan bingo boards you are on (sent whatever they are worth).
 		List<Tile> bingo = new ArrayList<>();
+	}
+
+	// The clan in game: when to send the clan list, the clan events on now, whether the chat bridge is on.
+	static class Clan
+	{
+		String name;
+		boolean due;
+		boolean bridge;
+		List<Live> live = new ArrayList<>();
+	}
+
+	static class Live
+	{
+		String id;
+		String title;
+		Integer world;
 	}
 
 	static class Tile
